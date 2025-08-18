@@ -1,7 +1,10 @@
-
+#include <iostream>
+#include <vector>
+#include <unordered_map>
 #include <functional>
 #include <memory>
-#include <stdint.h>
+#include <cstdint>
+#include <unistd.h>
 
 using TaskFunc = std::function<void()>;
 using ReleaseFunc = std::function<void()>;
@@ -59,9 +62,9 @@ public:
     {
         PtrTask pt(new TimerTask(id, delay, cb));
         pt->SetRelease(std::bind(&TimerWheel::RemoveTimer, this, id));
-        int pos = (_tick + delay) % _capacity;
-        _wheel[pos].push_back(pt); // 添加到轮子中
-        _times[id] = WeakTask(pt); // 保存定时器对象的weak_ptr
+        int pos = (_tick + delay) % _capacity; // 计算超时位置
+        _wheel[pos].push_back(pt);             // 添加到轮子中
+        _times[id] = WeakTask(pt);             // 保存定时器对象的weak_ptr
     }
 
     // 刷新/延迟定时任务
@@ -70,7 +73,7 @@ public:
         // 通过保存的定时器对象的weak_ptr构造一个shared_ptr出来，添加到轮子中
         auto it = _times.find(id);
         if (it == _times.end())
-            return;                     // 没找着定时任务，没法刷新，没法延迟
+            return; // 没找着定时任务，没法刷新，没法延迟
 
         PtrTask pt = it->second.lock(); // lock获取weak_ptr管理的对象对应的shared_ptr
         uint32_t delay = pt->DelayTime();
@@ -78,13 +81,22 @@ public:
         _wheel[pos].push_back(pt);
     }
 
+    // 取消定时任务
     void TimerCancel(uint64_t id)
     {
         auto it = _times.find(id);
         if (it == _times.end())
-            return;                     // 没找着定时任务，没法取消
+            return; // 没找着定时任务，没法取消
         PtrTask pt = it->second.lock();
-        
+        if (pt)
+            pt->Cancel();
+    }
+
+    // 每秒钟被执行一次，相当于秒针向后走了一步
+    void RunTimerTask()
+    {
+        _tick = (_tick + 1) % _capacity;
+        _wheel[_tick].clear(); // 清空指定位置的数组，就会把数组中保存的所有管理定时器对象的shared_ptr释放掉
     }
 
 private:
@@ -93,3 +105,40 @@ private:
     std::vector<std::vector<PtrTask>> _wheel;
     std::unordered_map<uint64_t, WeakTask> _times;
 };
+
+class Test
+{
+public:
+    Test() { std::cout << "构造" << std::endl; }
+    ~Test() { std::cout << "析构" << std::endl; }
+};
+
+void DelTest(Test *t)
+{
+    delete t;
+}
+
+int main()
+{
+    TimerWheel tw;
+    Test *t = new Test();
+    tw.TimerAdd(888, 5, std::bind(DelTest, t)); // 5s后删除Test对象
+
+    for (int i = 0; i < 5; i++)
+    {
+        tw.TimerRefresh(888); // 刷新定时器
+        tw.RunTimerTask();    // 向后走一步
+        std::cout << "刷新了一下定时任务，需要5s后才会销毁\n";
+        sleep(1);
+    }
+
+    tw.TimerCancel(888); // 取消定时器
+    for (;;)
+    {
+        std::cout << "####################\n";
+        sleep(1);
+        tw.RunTimerTask(); // 向后移动秒针
+    }
+
+    return 0;
+}
