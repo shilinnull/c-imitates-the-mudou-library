@@ -1,6 +1,6 @@
 .PHONY: a.out
 
-a.out: request.cc
+a.out: any.cc
 	rm -rf a.out
 	g++ $^ -o $@ -std=c++11
 .PHONY:clean
