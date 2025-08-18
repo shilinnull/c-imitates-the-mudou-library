@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <cassert>
+#include <any>
 
 class Any
 {
@@ -74,7 +75,7 @@ public:
     ~Test() { std::cout << "析构" << std::endl; }
 };
 
-int main()
+int main1()
 {
     Any a;
     a = 10;
@@ -87,5 +88,18 @@ int main()
     Test *pt = a.get<Test>();
 
     // std::cout << *ps << std::endl;
+    return 0;
+}
+
+int main()
+{
+    std::any a;
+    a = 10;
+    int *pa = std::any_cast<int>(&a);
+    std::cout << *pa << std::endl;
+
+    a = std::string("hello");
+    std::string *ps = std::any_cast<std::string>(&a);
+    std::cout << *ps << std::endl;
     return 0;
 }
