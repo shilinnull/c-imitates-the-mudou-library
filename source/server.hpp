@@ -6,6 +6,8 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
+#include <thread>
+#include <mutex>
 #include <cassert>
 #include <cstdint>
 #include <unistd.h>
@@ -15,6 +17,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 #include "Logger.hpp"
 
@@ -22,6 +25,7 @@
 #define MAX_EPOLLEVENTS 1024     // 最大epoll事件数
 #define MAX_LISTEN 1024          // 最大监听队列长度
 
+// 缓冲区模块
 class Buffer
 {
 public:
@@ -197,6 +201,7 @@ private:
     uint64_t _writer_idx;      // 写偏移
 };
 
+// 对套接字操作封装的一个模块
 class Socket
 {
 public:
@@ -274,21 +279,18 @@ public:
     ssize_t Recv(void *buf, size_t len, int flags = 0)
     {
         ssize_t n = recv(_sockfd, buf, len, flags);
-        if (n < 0)
+        if (n <= 0)
         {
             // EAGAIN 当前socket的接收缓冲区中没有数据了，在非阻塞的情况下才会有这个错误
             // EINTR  表示当前socket的阻塞等待，被信号打断了
             if (errno == EAGAIN || errno == EINTR)
                 return 0; // 表示这次接收没有接收到数据
-            else
-            {
-                LOG(LogLevel::ERROR) << "Recv socket failed";
-                return -1;
-            }
+            LOG(LogLevel::ERROR) << "Recv socket failed";
+            return -1;
         }
         return n; // 返回实际接收的字节数
     }
-    ssize_t NonBlockRecv(void *buf, size_t len, int flags = 0)
+    ssize_t NonBlockRecv(void *buf, size_t len)
     {
         return Recv(buf, len, MSG_DONTWAIT); // MSG_DONTWAIT 表示当前接收为非阻塞
     }
@@ -308,7 +310,7 @@ public:
         }
         return n; // 返回实际发送的字节数
     }
-    ssize_t NonBlockSend(const void *buf, size_t len, int flags = 0)
+    ssize_t NonBlockSend(const void *buf, size_t len)
     {
         return Send(buf, len, MSG_DONTWAIT); // MSG_DONTWAIT 表示当前发送为非阻塞
     }
@@ -377,13 +379,14 @@ private:
 };
 
 class Poller;
-
+class EventLoop;
+// 对一个描述符需要进行的IO事件管理的模块
 class Channel
 {
     using EventCallback = std::function<void()>;
 
 public:
-    Channel(Poller *poller, int fd) : _fd(0), _poller(poller), _events(0), _revents(0) {}
+    Channel(EventLoop *loop, int fd) : _fd(fd), _loop(loop), _events(0), _revents(0) {}
     ~Channel() {}
     int Fd() const { return _fd; }
     uint32_t Events() const { return _events; }             // 获取想要监控的事件
@@ -397,13 +400,11 @@ public:
     bool Readable()
     {
         return (_events & EPOLLIN);
-        Update();
     }
     // 当前是否监控了可写
     bool Writable()
     {
         return (_events & EPOLLOUT);
-        Update();
     }
     // 启动读事件监控
     void EnableRead()
@@ -444,6 +445,7 @@ public:
     // 事件处理，一旦连接触发了事件，就调用这个函数，自己触发了什么事件如何处理自己决定
     void HandleEvent()
     {
+        std::cout << "====================================";
         if ((_revents & EPOLLIN) || (_revents & EPOLLRDHUP) || (_revents & EPOLLPRI))
         {
             /*不管任何事件，都调用的回调函数*/
@@ -475,7 +477,7 @@ public:
 
 private:
     int _fd;                       // 套接字描述符
-    Poller *_poller;               // 所属的Poller
+    EventLoop *_loop;              // 所属的事件循环
     uint32_t _events;              // 当前需要监控的事件
     uint32_t _revents;             // 当前连接触发的事件
     EventCallback _read_callback;  // 可读事件被触发的回调函数
@@ -505,10 +507,7 @@ private:
 
         int ret = epoll_ctl(_epfd, op, fd, &ev);
         if (ret < 0)
-        {
             LOG(LogLevel::WARNING) << "Update epoll failed";
-            return;
-        }
     }
 
 public:
@@ -530,17 +529,22 @@ public:
         if (!ret)
         {
             // 不存在就添加
+            LOG(LogLevel::DEBUG) << "Add channel to epoll: " << channel->Fd();
             _channels.insert(std::make_pair(channel->Fd(), channel));
             return Update(channel, EPOLL_CTL_ADD);
         }
+        LOG(LogLevel::DEBUG) << "Update channel in epoll: " << channel->Fd();
         return Update(channel, EPOLL_CTL_MOD);
     }
     // 移除监控
     void RemoveEvent(Channel *channel)
     {
         auto it = _channels.find(channel->Fd());
-        if (it == _channels.end())
+        if (it != _channels.end())
+        {
+            LOG(LogLevel::DEBUG) << "Remove channel from epoll: " << channel->Fd();
             _channels.erase(channel->Fd());
+        }
         Update(channel, EPOLL_CTL_DEL);
     }
     // 开始监控，返回活跃连接
@@ -551,7 +555,6 @@ public:
         {
             if (errno == EINTR) // 被信号打断了
                 return;
-            LOG(LogLevel::FATAL) << "Poll epoll failed";
             abort(); // 退出程序
         }
         for (int i = 0; i < nfd; i++)
@@ -562,7 +565,7 @@ public:
                 LOG(LogLevel::FATAL) << "Poll epoll failed";
                 abort(); // 退出程序
             }
-            it->second->SetREvents(_events[i].events); //设置实际就绪的事件
+            it->second->SetREvents(_events[i].events); // 设置实际就绪的事件
             active->push_back(it->second);
         }
     }
@@ -573,13 +576,140 @@ private:
     std::unordered_map<int, Channel *> _channels; // 连接描述符到Channel的映射
 };
 
+class EventLoop
+{
+    using Functor = std::function<void()>;
+
+private:
+    int CreateEventFd()
+    {
+        int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (efd < 0)
+        {
+            LOG(LogLevel::FATAL) << "create eventfd fail!";
+            abort();
+        }
+        return efd;
+    }
+    void ReadEventfd()
+    {
+        uint64_t res = 0;
+        int ret = read(_event_fd, &res, sizeof(res));
+        if (ret < 0)
+        {
+            if (errno == EAGAIN || errno == EINTR)
+                return;
+            LOG(LogLevel::FATAL) << "read eventfd fail!";
+            abort();
+        }
+    }
+
+    void RunAllTasks()
+    {
+        std::vector<Functor> functor;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _tasks.swap(functor);
+        }
+        for (auto &f : functor)
+            f();
+    }
+
+    void WakeUpEventfd()
+    {
+        uint64_t val = 1;
+        int ret = write(_event_fd, &val, sizeof val);
+        if (ret < 0)
+        {
+            if (errno == EAGAIN || errno == EINTR)
+                return;
+            LOG(LogLevel::FATAL) << "write eventfd fail!";
+            abort();
+        }
+    }
+
+public:
+    EventLoop()
+        : _thread_id(std::this_thread::get_id()),
+          _event_fd(CreateEventFd()),
+          _event_channel(new Channel(this, _event_fd))
+    {
+        // 给eventfd添加可读事件回调函数，读取eventfd事件通知次数
+        _event_channel->SetReadCallback(std::bind(&EventLoop::ReadEventfd, this));
+        // 启动eventfd的读事件监控
+        _event_channel->EnableRead();
+    }
+
+    ~EventLoop() {}
+
+    void Start()
+    {
+        for (;;)
+        {
+            // 1. 事件监控
+            std::vector<Channel *> actives;
+            _poller.Poll(&actives);
+            // 2. 事件处理
+            for (auto channel : actives)
+                channel->HandleEvent(); // 处理事件
+            // 3. 执行任务
+            RunAllTasks();
+        }
+    }
+
+    bool isInLoop() const
+    {
+        return std::this_thread::get_id() == _thread_id;
+    }
+
+    void QueueInLoop(const Functor &&cb)
+    {
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _tasks.emplace_back(cb);
+        }
+        // 唤醒有可能因为没有事件就绪，而导致的epoll阻塞；
+        // 其实就是给eventfd写入一个数据，eventfd就会触发可读事件
+        WakeUpEventfd();
+    }
+
+    // 判断将要执行的任务是否处于当前线程中，如果是则执行，不是则压入队列。
+    void RunInLoop(const Functor &&cb)
+    {
+        if (isInLoop())
+            return cb();
+        return QueueInLoop(std::move(cb));
+    }
+
+    // 添加或修改监控事件
+    void UpdateEvent(Channel *channel)
+    {
+        _poller.UpdateEvent(channel);
+    }
+
+    // 移除监控
+    void RemoveEvent(Channel *channel)
+    {
+        _poller.RemoveEvent(channel);
+    }
+
+private:
+    std::thread::id _thread_id; // 线程id
+    int _event_fd;              // eventfd唤醒IO事件监控有可能导致的阻塞
+    std::unique_ptr<Channel> _event_channel;
+    Poller _poller;              // 进行所有描述符的事件监控
+    std::vector<Functor> _tasks; // 任务池
+    std::mutex _mutex;           // 实现任务池操作的线程安全
+};
+
 void Channel::Remove()
 {
-    _poller->RemoveEvent(this);
+    _loop->RemoveEvent(this);
 }
 
 void Channel::Update()
 {
-    _poller->UpdateEvent(this);
+    _loop->UpdateEvent(this);
 }
+
 #endif // __SERVER_HPP__
