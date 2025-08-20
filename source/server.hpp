@@ -214,12 +214,13 @@ public:
     // 创建套接字
     bool Create()
     {
-        _sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        _sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (_sockfd < 0)
         {
             LOG(LogLevel::FATAL) << "Create socket failed";
             return false;
         }
+        LOG(LogLevel::INFO) << "Create socket success, _sockfd: " << _sockfd;
         return true;
     }
     // 绑定地址信息
@@ -257,10 +258,10 @@ public:
         addr.sin_port = htons(port);                  // 端口号
         addr.sin_addr.s_addr = inet_addr(ip.c_str()); // IP地址
         socklen_t len = sizeof(struct sockaddr_in);
-        int ret = connect(_sockfd, (sockaddr *)&addr, len);
+        int ret = connect(_sockfd, (struct sockaddr *)&addr, len);
         if (ret < 0)
         {
-            LOG(LogLevel::WARNING) << "Connect socket failed";
+            LOG(LogLevel::FATAL) << "Connect socket failed";
             return false;
         }
         return true;
@@ -313,7 +314,8 @@ public:
     }
     ssize_t NonBlockSend(const void *buf, size_t len)
     {
-        if(len == 0) return 0; // 发送长度为0，直接返回
+        if (len == 0)
+            return 0;                        // 发送长度为0，直接返回
         return Send(buf, len, MSG_DONTWAIT); // MSG_DONTWAIT 表示当前发送为非阻塞
     }
     // 关闭套接字
@@ -354,9 +356,9 @@ public:
     void EnableAddressReuse()
     {
         int on = 1;
-        setsockopt(_sockfd, SOL_SOCKET, SO_REUSEADDR, (void*)&on, sizeof(on)); // 开启地址重用
+        setsockopt(_sockfd, SOL_SOCKET, SO_REUSEADDR, (void *)&on, sizeof(on)); // 开启地址重用
         on = 1;
-        setsockopt(_sockfd, SOL_SOCKET, SO_REUSEPORT, (void*)&on, sizeof(on)); // 开启端口重用
+        setsockopt(_sockfd, SOL_SOCKET, SO_REUSEPORT, (void *)&on, sizeof(on)); // 开启端口重用
     }
     // 设置套接字非阻塞属性
     void SetNonBlocking()
@@ -510,6 +512,7 @@ public:
             LOG(LogLevel::FATAL) << "Create epoll failed";
             abort(); // 退出程序
         }
+        LOG(LogLevel::INFO) << "Create epoll success, _epfd: " << _epfd;
     }
     ~Poller() {}
 
@@ -546,7 +549,7 @@ public:
         {
             if (errno == EINTR) // 被信号打断了
                 return;
-            
+
             LOG(LogLevel::DEBUG) << "epoll wait error: " << strerror(errno);
             abort(); // 退出程序
         }
@@ -618,6 +621,7 @@ private:
             LOG(LogLevel::FATAL) << "timerfd_create failed!";
             abort();
         }
+        LOG(LogLevel::INFO) << "timerfd_create success, timefd: " << timerfd;
         struct itimerspec itime;
         itime.it_value.tv_sec = 1;
         itime.it_value.tv_nsec = 0; // 第一次超时时间为1s后
@@ -667,7 +671,7 @@ private:
         auto it = _timers.find(id);
         if (it == _timers.end())
             return; // 没找着定时任务，没法刷新，没法延迟
-        
+
         PtrTask pt = it->second.lock(); // lock获取weak_ptr管理的对象对应的shared_ptr
         int delay = pt->DelayTime();
         int pos = (_tick + delay) % _capacity;
@@ -704,7 +708,7 @@ public:
     bool HasTimer(uint64_t id)
     {
         auto it = _timers.find(id);
-        if(it == _timers.end())
+        if (it == _timers.end())
             return false;
         return true;
     }
@@ -733,6 +737,7 @@ private:
             LOG(LogLevel::FATAL) << "create eventfd fail!";
             abort();
         }
+        LOG(LogLevel::INFO) << "create eventfd success, eventFd: " << efd;
         return efd;
     }
     void ReadEventfd()
@@ -861,6 +866,7 @@ public:
     {
         return _timer_wheel.HasTimer(id);
     }
+
 private:
     std::thread::id _thread_id; // 线程id
     int _event_fd;              // eventfd唤醒IO事件监控有可能导致的阻塞
@@ -869,7 +875,7 @@ private:
     std::vector<Functor> _tasks; // 任务池
     std::mutex _mutex;           // 实现任务池操作的线程安全
 
-    TimerWheel _timer_wheel;    // 定时器轮子
+    TimerWheel _timer_wheel; // 定时器轮子
 };
 
 void Channel::Remove()
