@@ -1,5 +1,5 @@
 #include <iostream>
-#include "Connection.hpp"
+#include "server.hpp"
 
 void TestConnection()
 {

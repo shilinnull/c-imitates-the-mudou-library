@@ -1,8 +1,8 @@
 #include "../../source/server.hpp"
 
-void HadnleClose(Channel *channel)
+void HandleClose(Channel *channel)
 {
-    std::cout << "关闭连接！\n";
+    LOG(LogLevel::DEBUG) << "close: " << channel->Fd();
     channel->Remove();
     delete channel;
 }
@@ -12,58 +12,60 @@ void HandleRead(Channel *channel)
     int fd = channel->Fd();
     char buf[1024]{0};
     int ret = recv(fd, buf, 1023, 0);
-    if (ret < 0)
-        return HadnleClose(channel);
-    std::cout << "recv: " << buf << std::endl;
-    channel->EnableWrite(); // 发送数据后再次开启可写事件监听
+    if (ret <= 0)
+        return HandleClose(channel);
+    LOG(LogLevel::DEBUG) << "recv: " << ret << " bytes from " << fd;
+    channel->EnableWrite(); // 发送数据后再次开启可写事件监听(回复)
 }
 void HandleWrite(Channel *channel)
 {
     int fd = channel->Fd();
-    const char *msg = "hello world";
+    const char *msg = "写入数据: hello world";
     int ret = send(fd, msg, strlen(msg), 0);
     if (ret < 0)
-        return HadnleClose(channel);
+        return HandleClose(channel);
     channel->DisableWrite(); // 发送完数据后关闭可写事件监听
 }
 
 void HandleError(Channel *channel)
 {
-    return HadnleClose(channel);
+    return HandleClose(channel);
 }
-void HandleEvent(Channel *channel)
+void HandleEvent(EventLoop *loop, Channel *channel, uint64_t timerid)
 {
-    std::cout << "有一个事件来了！\n";
+    LOG(LogLevel::DEBUG) << "有新的事件来了";
+    loop->TimerRefresh(timerid); // 刷新活跃度
 }
-void Accepter(Poller *poller, Channel *lst_channel)
+void Accepter(EventLoop *loop, Channel *lst_channel)
 {
     int fd = lst_channel->Fd();
-    int newfd = accept(fd, NULL, NULL);
+    int newfd = accept(fd, nullptr, nullptr);
     if (newfd < 0)
         return;
-    Channel *channel = new Channel(poller, newfd);
+
+    uint64_t timerid = rand() % 10000;
+    Channel *channel = new Channel(loop, newfd);
     channel->SetReadCallback(std::bind(HandleRead, channel));
     channel->SetWriteCallback(std::bind(HandleWrite, channel));
-    channel->SetCloseCallback(std::bind(HadnleClose, channel));
+    channel->SetCloseCallback(std::bind(HandleClose, channel));
     channel->SetErrorCallback(std::bind(HandleError, channel));
-    channel->SetEventCallback(std::bind(HandleEvent, channel));
+    channel->SetEventCallback(std::bind(HandleEvent, loop, channel, timerid));
+    loop->TimerAdd(timerid, 10, std::bind(HandleClose, channel));
     channel->EnableRead(); // 启动可读事件监听
 }
 
 int main()
 {
+    srand(time(nullptr));
     Socket lst_sock;
-    Poller poller;
+    EventLoop loop;
     lst_sock.CreateServerSocket(8500);
-    Channel channel(&poller, lst_sock.Fd());
-    channel.SetReadCallback(std::bind(Accepter, &poller, &channel)); // 设置可读事件回调
-    channel.EnableRead();                                            // 启动可读事件监听
+    Channel channel(&loop, lst_sock.Fd());
+    channel.SetReadCallback(std::bind(Accepter, &loop, &channel)); // 设置可读事件回调
+    channel.EnableRead();                                          // 启动可读事件监听
     for (;;)
     {
-        std::vector<Channel *> active_channels;
-        poller.Poll(&active_channels);
-        for (auto &a : active_channels)
-            a->HandleEvent();
+        loop.Start(); // 启动事件循环
     }
     lst_sock.Close();
     return 0;
