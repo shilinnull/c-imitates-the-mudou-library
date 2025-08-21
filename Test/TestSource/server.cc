@@ -1,5 +1,64 @@
 #include "../../source/server.hpp"
 
+std::unordered_map<ino64_t, PtrConnection> _conns;
+uint64_t conn_id;
+
+
+void OnMessage(const PtrConnection &conn, Buffer *buf)
+{
+    LOG(LogLevel::DEBUG) << buf->ReadPosition();
+    buf->MoveReadOffset(buf->ReadableSize());
+    std::string s = "hello world";
+    conn->Send(s.c_str(), s.size());
+    conn->Shutdown();
+}
+
+void ConnectionDestory(const PtrConnection &conn)
+{
+    _conns.erase(conn->Id());
+}
+
+void OnConnected(const PtrConnection &conn)
+{
+    LOG(LogLevel::DEBUG) << "new Connection: " << conn.get();
+}
+
+void Accepter(EventLoop *loop, Channel *lst_channel)
+{
+    int fd = lst_channel->Fd();
+    int newfd = accept(fd, nullptr, nullptr);
+    if (newfd < 0)
+        return;
+
+    conn_id++;
+
+    PtrConnection conn(new Connection(loop, conn_id, newfd));
+    conn->SetMessageCallback(std::bind(OnMessage, std::placeholders::_1, std::placeholders::_2));
+    conn->SetSrvClosedCallback(std::bind(ConnectionDestory, std::placeholders::_1));
+    conn->SetConnectedCallback(std::bind(OnConnected, std::placeholders::_1));
+    conn->EnableInactiveRelease(10);
+    conn->Established();
+    _conns.insert(std::make_pair(conn_id, conn));
+}
+
+int main()
+{
+    srand(time(nullptr));
+    Socket lst_sock;
+    EventLoop loop;
+    lst_sock.CreateServerSocket(8500);
+    Channel channel(&loop, lst_sock.Fd());
+    channel.SetReadCallback(std::bind(Accepter, &loop, &channel)); // 设置可读事件回调
+    channel.EnableRead();                                          // 启动可读事件监听
+    for (;;)
+    {
+        loop.Start(); // 启动事件循环
+    }
+    lst_sock.Close();
+    return 0;
+}
+
+#if 0
 void HandleClose(Channel *channel)
 {
     LOG(LogLevel::DEBUG) << "close: " << channel->Fd();
@@ -71,7 +130,7 @@ int main()
     return 0;
 }
 
-#if 0
+
 int main()
 {
     Socket lst_sock;
