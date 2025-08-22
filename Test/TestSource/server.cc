@@ -1,5 +1,30 @@
 #include "../../source/server.hpp"
 
+void OnConnected(const PtrConnection &conn) {
+    LOG(LogLevel::DEBUG) << "NEW CONNECTION:" << conn.get();
+}
+void OnClosed(const PtrConnection &conn) {
+    LOG(LogLevel::DEBUG) << "CLOSE CONNECTION:" << conn.get();
+}
+void OnMessage(const PtrConnection &conn, Buffer *buf) {
+    LOG(LogLevel::DEBUG) << buf->ReadPosition();
+    buf->MoveReadOffset(buf->ReadableSize());
+    std::string str = "Hello World";
+    conn->Send(str.c_str(), str.size());
+}
+int main()
+{
+    TcpServer server(8500);
+    server.SetThreadCount(2);
+    //server.EnableInactiveRelease(10);
+    server.SetClosedCallback(OnClosed);
+    server.SetConnectedCallback(OnConnected);
+    server.SetMessageCallback(OnMessage);
+    server.Start();
+    return 0;
+}
+
+#if 0
 // 管理所有的连接
 std::unordered_map<uint64_t, PtrConnection> _conns;
 uint64_t conn_id = 0;
@@ -47,7 +72,7 @@ int main()
     return 0;
 }
 
-#if 0
+
 std::unordered_map<ino64_t, PtrConnection> _conns;
 uint64_t conn_id;
 
