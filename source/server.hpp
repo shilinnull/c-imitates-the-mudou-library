@@ -343,13 +343,13 @@ public:
         // 1. 创建套接字, 2. 绑定地址，3. 开始监听，4. 设置非阻塞， 5. 启动地址重用
         if (!Create())
             return false;
+        EnableAddressReuse();
         if (block_flag)
             SetNonBlocking();
         if (!Bind(ip, port))
             return false;
         if (!Listen())
             return false;
-        EnableAddressReuse();
         return true;
     }
     // 创建一个客户端连接
@@ -413,31 +413,31 @@ public:
     // 启动读事件监控
     void EnableRead()
     {
-        _revents |= EPOLLIN;
+        _events |= EPOLLIN;
         Update();
     }
     // 启动写事件监控
     void EnableWrite()
     {
-        _revents |= EPOLLOUT;
+        _events |= EPOLLOUT;
         Update();
     }
     // 关闭读事件监控
     void DisableRead()
     {
-        _revents &= ~EPOLLIN;
+        _events &= ~EPOLLIN;
         Update();
     }
     // 关闭写事件监控
     void DisableWrite()
     {
-        _revents &= ~EPOLLOUT;
+        _events &= ~EPOLLOUT;
         Update();
     }
     // 关闭所有事件监控
     void DisableAll()
     {
-        _revents = 0;
+        _events = 0;
         Update();
     }
 
@@ -1104,7 +1104,7 @@ private:
         _out_buffer.MoveReadOffset(ret);
         if (_out_buffer.ReadableSize() == 0)
         {
-            _channel.DisableRead(); // 没有数据待发送了，关闭写事件监控
+            _channel.DisableWrite(); // 没有数据待发送了，关闭写事件监控
             if (_statu == DISCONNECTED)
             {
                 return Release();
@@ -1225,7 +1225,7 @@ private:
 public:
     Connection(EventLoop *loop, uint64_t conn_id, int sockfd)
         : _conn_id(conn_id), _sockfd(sockfd), _enable_inactive_release(false),
-          _loop(_loop), _statu(CONNECTING), _socket(_sockfd), _channel(_loop, _sockfd)
+          _loop(loop), _statu(CONNECTING), _socket(_sockfd), _channel(_loop, _sockfd)
     {
         _channel.SetReadCallback(std::bind(&Connection::HandleRead, this));
         _channel.SetWriteCallback(std::bind(&Connection::HandleWrite, this));
@@ -1252,7 +1252,7 @@ public:
     // 连接建立就绪后，进行channel回调设置，启动读监控，调用_connected_callback
     void Established()
     {
-        _loop->RunInLoop(std::bind(&Connection::Established, this));
+        _loop->RunInLoop(std::bind(&Connection::EstablishedInLoop, this));
     }
     // 发送数据，将数据放到发送缓冲区，启动写事件监控
     void Send(const char *data, size_t len)
