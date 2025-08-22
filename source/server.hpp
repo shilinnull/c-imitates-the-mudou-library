@@ -1208,6 +1208,57 @@ private:
     ClosedCallback _server_closed_callback;
 };
 
+class Accepter
+{
+    using AcceptCallback = std::function<void(int)>;
+
+private:
+    void HandleRead()
+    {
+        int newfd = _socket.Accept();
+        if (newfd < 0)
+            return;
+        if (_accept_callback)
+            _accept_callback(newfd);
+    }
+
+    int CreateServer(uint16_t port)
+    {
+        bool ret = _socket.CreateServerSocket(port);
+        if (ret == false)
+        {
+            LOG(LogLevel::FATAL) << "CreateServerSocket fial!";
+            abort();
+        }
+        return _socket.Fd();
+    }
+
+public:
+    Accepter(EventLoop *loop, int port)
+        : _loop(loop), _socket(CreateServer(port)), _channel(loop, _socket.Fd())
+    {
+        _channel.SetReadCallback(std::bind(&Accepter::HandleRead, this));
+    }
+    ~Accepter() {}
+
+    void SetAcceptCallback(const AcceptCallback &_cb)
+    {
+        _accept_callback = _cb;
+    }
+
+    void Listen()
+    {
+        _channel.EnableRead();
+    }
+
+private:
+    Socket _socket;   // 监听套接字
+    EventLoop *_loop; // 用于对监听套接字进行事件监控
+    Channel _channel; // 用于对监听套接字进行事件管理
+
+    AcceptCallback _accept_callback;
+};
+
 void Channel::Remove()
 {
     _loop->RemoveEvent(this);
