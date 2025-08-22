@@ -8,6 +8,7 @@
 #include <functional>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <cassert>
 #include <cstdint>
 #include <unistd.h>
@@ -886,6 +887,113 @@ private:
     TimerWheel _timer_wheel; // 定时器轮子
 };
 
+void Channel::Remove()
+{
+    _loop->RemoveEvent(this);
+}
+
+void Channel::Update()
+{
+    _loop->UpdateEvent(this);
+}
+
+// 添加定时任务
+void TimerWheel::TimerAdd(uint64_t id, uint32_t delay, const TaskFunc &cb)
+{
+    _loop->RunInLoop(std::bind(&TimerWheel::TimerAddInLoop, this, id, delay, cb));
+}
+
+// 刷新/延迟定时任务
+void TimerWheel::TimerRefresh(uint64_t id)
+{
+    _loop->RunInLoop(std::bind(&TimerWheel::TimerRefreshInLoop, this, id));
+}
+
+// 取消定时任务
+void TimerWheel::TimerCancel(uint64_t id)
+{
+    _loop->RunInLoop(std::bind(&TimerWheel::TimerCancelInLoop, this, id));
+}
+
+class LoopThread
+{
+private:
+    /*实例化 EventLoop 对象，唤醒_cond上有可能阻塞的线程，并且开始运行EventLoop模块的功能*/
+    void ThreadEntry()
+    {
+        EventLoop loop;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _loop = &loop;
+            _cond.notify_all();
+        }
+        loop.Start();
+    }
+
+public:
+    /*创建线程，设定线程入口函数*/
+    LoopThread()
+        : _loop(nullptr),
+          _thread(std::thread(&LoopThread::ThreadEntry, this)) {}
+    /*返回当前线程关联的EventLoop对象指针*/
+    EventLoop *GetLoop()
+    {
+        EventLoop *loop = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _cond.wait(lock, [&]()
+                       { return _loop != nullptr; });
+            loop = _loop;
+        }
+        return loop;
+    }
+
+private:
+    // 用于实现_loop获取的同步关系，避免线程创建了，但是_loop还没有实例化之前去获取_loop
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    EventLoop *_loop;
+    std::thread _thread;
+};
+
+class LoopThreadPool
+{
+public:
+    LoopThreadPool(EventLoop *loop)
+        : _thread_count(0), _next_idx(0)
+        ,_baseloop(loop){}
+    void SetThreadCount(int count) { _thread_count = count;}
+    void Create()
+    {
+        if(_thread_count > 0)
+        {
+            _threads.resize(_thread_count);
+            _loops.resize(_thread_count);
+            for(int i = 0; i < _thread_count; i++)
+            {
+                _threads[i] = new LoopThread();
+                _loops[i] = _threads[i]->GetLoop();
+            }
+        }
+    }
+
+    EventLoop* NextLoop()
+    {
+        if(_thread_count == 0)
+            return _baseloop;
+        _next_idx = (_next_idx + 1) % _thread_count;
+        LOG(LogLevel::DEBUG) << "_next_idx: " << _next_idx;
+        return _loops[_next_idx];
+    }
+
+private:
+    int _thread_count;
+    int _next_idx;
+    EventLoop *_baseloop;
+    std::vector<LoopThread*> _threads;
+    std::vector<EventLoop*> _loops;
+};
+
 class Any
 {
 public:
@@ -1259,32 +1367,12 @@ private:
     AcceptCallback _accept_callback;
 };
 
-void Channel::Remove()
+class TcpServer
 {
-    _loop->RemoveEvent(this);
-}
+};
 
-void Channel::Update()
+class NetWork
 {
-    _loop->UpdateEvent(this);
-}
-
-// 添加定时任务
-void TimerWheel::TimerAdd(uint64_t id, uint32_t delay, const TaskFunc &cb)
-{
-    _loop->RunInLoop(std::bind(&TimerWheel::TimerAddInLoop, this, id, delay, cb));
-}
-
-// 刷新/延迟定时任务
-void TimerWheel::TimerRefresh(uint64_t id)
-{
-    _loop->RunInLoop(std::bind(&TimerWheel::TimerRefreshInLoop, this, id));
-}
-
-// 取消定时任务
-void TimerWheel::TimerCancel(uint64_t id)
-{
-    _loop->RunInLoop(std::bind(&TimerWheel::TimerCancelInLoop, this, id));
-}
+};
 
 #endif // __SERVER_HPP__
