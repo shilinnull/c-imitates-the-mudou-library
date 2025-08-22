@@ -16,7 +16,7 @@ int main()
 {
     TcpServer server(8500);
     server.SetThreadCount(2);
-    //server.EnableInactiveRelease(10);
+    server.EnableInactiveRelease(10);
     server.SetClosedCallback(OnClosed);
     server.SetConnectedCallback(OnConnected);
     server.SetMessageCallback(OnMessage);
