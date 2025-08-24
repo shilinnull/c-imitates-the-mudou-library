@@ -208,7 +208,7 @@ public:
         return true;
     }
 
-    static bool WriteFile(const std::string &filename, std::string &buf)
+    static bool WriteFile(const std::string &filename, const std::string &buf)
     {
         std::ofstream ofs(filename, std::ios::binary | std::ios::trunc);
         if (!ofs.is_open())
@@ -297,7 +297,7 @@ public:
         return it->second;
     }
     // 根据文件后缀名获取文件mime
-    static std::string ExtMine(const std::string &filename)
+    static std::string ExtMime(const std::string &filename)
     {
         // 先获取文件扩展名
         size_t pos = filename.find_last_of('.');
@@ -448,9 +448,7 @@ public:
     {
         // 没有Connection字段，或者有Connection但是值是close，则都是短链接，否则就是长连接
         if (HasHeader("Connection") == true && GetHeader("Connection") == "keep-alive")
-        {
             return false;
-        }
         return true;
     }
 
@@ -560,10 +558,9 @@ private:
         // 协议版本的获取
         _request._version = matches[4];
         // 查询字符串的获取与处理
-        std::string query_string = matches[3];
-
         // 分割，得到各个子串
         std::vector<std::string> query_string_arry;
+        std::string query_string = matches[3];
         Util::Split(query_string, "&", &query_string_arry);
         // 针对各个字串，以 = 符号进行分割，得到key 和val， 得到之后也需要进行URL解码
         for (auto &str : query_string_arry)
@@ -576,7 +573,7 @@ private:
                 return false;
             }
             // user=xiaoming
-            std::string key = Util::UrlDecode(str.substr(0, pos), false);
+            std::string key = Util::UrlDecode(str.substr(0, pos), true);
             std::string value = Util::UrlDecode(str.substr(pos + 1), true);
             _request.SetParam(key, value);
         }
@@ -590,9 +587,9 @@ private:
         // 1. 获取一行数据，带有末尾的换行
         std::string line = buf->GetLineAndPop();
         // 2. 需要考虑的一些要素：缓冲区中的数据不足一行， 获取的一行数据超大
-        if (line.size() > 0)
+        if (line.size() == 0)
         {
-            // 缓冲区中的数据不足一行，则需要判断缓冲区的可读数据长度，如果很长了都不足一行，这是有问题的s
+            // 缓冲区中的数据不足一行，则需要判断缓冲区的可读数据长度，如果很长了都不足一行，这是有问题的
             if (buf->ReadableSize() > MAX_LINE)
             {
                 _recv_statu = RECV_HTTP_ERROR;
@@ -666,7 +663,7 @@ private:
         if (pos == std::string::npos)
         {
             _recv_statu = RECV_HTTP_ERROR;
-            _resp_statu = 400; //
+            _resp_statu = 400; // BAD REQUEST
             return false;
         }
         std::string key = line.substr(0, pos);
@@ -691,7 +688,7 @@ private:
         size_t real_len = content_length - _request._body.size(); // 实际还需要接收的正文长度
         // 3. 接收正文放到body中，但是也要考虑当前缓冲区中的数据，是否是全部的正文
         //  3.1 缓冲区中数据，包含了当前请求的所有正文，则取出所需的数据
-        if (buf->ReadableSize() > real_len)
+        if (buf->ReadableSize() >= real_len)
         {
             _request._body.append(buf->ReadPosition(), real_len);
             buf->MoveReadOffset(real_len);
@@ -765,7 +762,7 @@ private:
     void WriteReponse(const PtrConnection &conn, const HttpRequest &req, HttpResponse &rsp)
     {
         // 1.完善头部字段
-        if (req.Close() == false)
+        if (req.Close() == true)
             rsp.SetHeader("Connection", "close");
         else
             rsp.SetHeader("Connection", "keep-alive");
@@ -779,7 +776,7 @@ private:
         std::stringstream rsp_str;
         rsp_str << req._version << " " << std::to_string(rsp._statu) << " " << Util::StatuDesc(rsp._statu) << "\r\n";
         for (auto &head : rsp._headers)
-            rsp_str << head.first << ": " << head.second;
+            rsp_str << head.first << ": " << head.second << "\r\n";
         rsp_str << "\r\n";
         rsp_str << rsp._body;
         // 3.发送数据
@@ -792,7 +789,7 @@ private:
         if (_base_dir.empty())
             return false;
         // 2. 请求方法必须是GET/HEAD方法
-        if (req._method != "GET" || req._method != "HEAD")
+        if (req._method != "GET" && req._method != "HEAD")
             return false;
         // 3. 合法路径
         if (Util::ValidPath(req._path) == false)
@@ -800,7 +797,7 @@ private:
         // 4. 资源存在且普通文件
         // 有一种请求比较特殊 -- 目录：/, /image/， 这种情况给后边默认追加一个 index.html
         std::string req_path = _base_dir + req._path;
-        if (req_path.back() == '/')
+        if (req._path.back() == '/')
         {
             req_path += "index.html";
         }
@@ -823,8 +820,8 @@ private:
         if (ret == false)
             return;
         // 设置文件类型
-        std::string mime = Util::ExtMine(req_path);
-        rsp->SetHeader("Conetnt-Type", mime);
+        std::string mime = Util::ExtMime(req_path);
+        rsp->SetHeader("Content-Type", mime);
     }
 
     // 功能性请求的分类处理
@@ -839,9 +836,12 @@ private:
             const Handler &functor = handler.second;
             bool ret = std::regex_match(req._path, req._matches, re);
             if (ret == false)
-                return;
+                continue;
+            // 传入请求信息，和空的rsp，执行处理函数
             return functor(req, rsp);
         }
+        // 没有找到匹配的路由，返回404
+        rsp->_statu = 404;
     }
 
     void Route(HttpRequest &req, HttpResponse *rsp)
@@ -886,6 +886,7 @@ private:
 
             HttpRequest &req = context->Request();
             HttpResponse rsp(context->RespStatu());
+            // 进行错误响应，关闭连接
             if (context->RespStatu() >= 400)
             {
                 // 进行错误响应，关闭连接
@@ -893,7 +894,8 @@ private:
                 WriteReponse(conn, req, rsp); // 组织响应
                 context->ReSet();
                 buffer->MoveReadOffset(buffer->ReadableSize()); // 出错了就把缓冲区数据清空
-                return conn->Shutdown();
+                conn->Shutdown();                        // 关闭连接
+                return;
             }
             // 当前请求还没有接收完整,则退出，等新数据到来再重新继续处理
             if (context->RecvStatu() != RECV_HTTP_OVER)

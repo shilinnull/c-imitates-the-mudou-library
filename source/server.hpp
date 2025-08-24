@@ -106,8 +106,10 @@ public:
     void Write(const void *data, uint64_t len)
     {
         // 1. 保证有足够空间，2. 拷贝数据进去
-        EnsureWriteSpace(len);
-        std::copy(static_cast<const char *>(data), static_cast<const char *>(data) + len, WritePosition());
+        if (len == 0) 
+            return;
+            const char *d = (const char *)data;
+            std::copy(d, d + len, WritePosition());
     }
 
     // 写入数据并压入
@@ -160,10 +162,12 @@ public:
     // 读取字符串
     std::string ReadAsString(uint64_t len)
     {
-        // 要求要获取的数据大小必须小于可读数据大小
+        //要求要获取的数据大小必须小于可读数据大小
         assert(len <= ReadableSize());
-        std::string s(ReadPosition(), len);
-        return s;
+        std::string str;
+        str.resize(len);
+        Read(&str[0], len);
+        return str;
     }
 
     // 读取字符串并弹出
@@ -218,7 +222,7 @@ class Socket
 public:
     Socket() : _sockfd(-1) {}
     Socket(int sockfd) : _sockfd(sockfd) {}
-    ~Socket() {}
+    ~Socket() { Close(); }
     int Fd() const { return _sockfd; }
 
     // 创建套接字
@@ -314,11 +318,8 @@ public:
         {
             if (errno == EAGAIN || errno == EINTR)
                 return 0; // 表示这次发送没有发送成功
-            else
-            {
-                LOG(LogLevel::ERROR) << "Send socket failed";
-                return -1;
-            }
+            LOG(LogLevel::ERROR) << "Send socket failed";
+            return -1;
         }
         return n; // 返回实际发送的字节数
     }
@@ -343,13 +344,13 @@ public:
         // 1. 创建套接字, 2. 绑定地址，3. 开始监听，4. 设置非阻塞， 5. 启动地址重用
         if (!Create())
             return false;
-        EnableAddressReuse();
         if (block_flag)
             SetNonBlocking();
         if (!Bind(ip, port))
             return false;
         if (!Listen())
             return false;
+        EnableAddressReuse();
         return true;
     }
     // 创建一个客户端连接
@@ -566,11 +567,7 @@ public:
         for (int i = 0; i < nfds; i++)
         {
             auto it = _channels.find(_events[i].data.fd);
-            if (it == _channels.end())
-            {
-                LOG(LogLevel::FATAL) << "Poll epoll failed";
-                abort(); // 退出程序
-            }
+            assert(it != _channels.end());
             it->second->SetREvents(_events[i].events); // 设置实际就绪的事件
             active->push_back(it->second);
         }
@@ -637,7 +634,7 @@ private:
         itime.it_value.tv_nsec = 0; // 第一次超时时间为1s后
         itime.it_interval.tv_sec = 1;
         itime.it_interval.tv_nsec = 0; // 第一次超时后，每次超时的间隔时
-        timerfd_settime(timerfd, 0, &itime, NULL);
+        timerfd_settime(timerfd, 0, &itime, nullptr);
         return timerfd;
     }
     int ReadTimerfd()
@@ -660,6 +657,7 @@ private:
 
     void OnTime()
     {
+        //根据实际超时的次数，执行对应的超时任务
         int times = ReadTimerfd();
         for (int i = 0; i < times; i++)
         {
@@ -826,11 +824,11 @@ public:
         assert(_thread_id == std::this_thread::get_id());
     }
     // 将操作压入任务池
-    void QueueInLoop(const Functor &&cb)
+    void QueueInLoop(const Functor &cb)
     {
         {
             std::unique_lock<std::mutex> lock(_mutex);
-            _tasks.emplace_back(cb);
+            _tasks.push_back(cb);
         }
         // 唤醒有可能因为没有事件就绪，而导致的epoll阻塞；
         // 其实就是给eventfd写入一个数据，eventfd就会触发可读事件
@@ -838,11 +836,11 @@ public:
     }
 
     // 判断将要执行的任务是否处于当前线程中，如果是则执行，不是则压入队列。
-    void RunInLoop(const Functor &&cb)
+    void RunInLoop(const Functor &cb)
     {
         if (isInLoop())
             return cb();
-        return QueueInLoop(std::move(cb));
+        return QueueInLoop(cb);
     }
 
     // 添加或修改监控事件
@@ -1105,7 +1103,7 @@ private:
         if (_out_buffer.ReadableSize() == 0)
         {
             _channel.DisableWrite(); // 没有数据待发送了，关闭写事件监控
-            if (_statu == DISCONNECTED)
+            if (_statu == DISCONNECTING)
             {
                 return Release();
             }
@@ -1180,7 +1178,7 @@ private:
     // 这个关闭操作并非实际的连接释放操作，需要判断还有没有数据待处理，待发送
     void ShutdownInLoop()
     {
-        _statu = DISCONNECTED; // 设置半关闭状态
+        _statu = DISCONNECTING; // 设置半关闭状态
         if (_in_buffer.ReadableSize() > 0)
             if (_message_callback)
                 _message_callback(shared_from_this(), &_in_buffer);
@@ -1261,7 +1259,7 @@ public:
         因此有可能执行的时候，data指向的空间有可能已经被释放了。*/
         Buffer buf;
         buf.WriteAndPush(data, len);
-        _loop->RunInLoop(std::bind(&Connection::SendInLoop, this, buf));
+        _loop->RunInLoop(std::bind(&Connection::SendInLoop, this, std::move(buf)));
     }
     // 提供给组件使用者的关闭接口--并不实际关闭，需要判断有没有数据待处理
     void Shutdown()
@@ -1333,11 +1331,7 @@ private:
     int CreateServer(uint16_t port)
     {
         bool ret = _socket.CreateServerSocket(port);
-        if (ret == false)
-        {
-            LOG(LogLevel::FATAL) << "CreateServerSocket fial!";
-            abort();
-        }
+        assert(ret == true);
         return _socket.Fd();
     }
 
