@@ -1,6 +1,6 @@
 .PHONY:main
 main:main.cc
 	rm -f main
-	g++ -g -std=c++17 $^ -o $@ -lpthread
+	g++ -std=c++11 $^ -o $@ -lpthread
 test:test.cc
-	g++ -std=c++17 $^ -o $@
+	g++ -std=c++11 $^ -o $@
