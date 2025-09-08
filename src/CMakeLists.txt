@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.5)
+cmake_minimum_required(VERSION 3.18)
 project(mymuduo)
 
 # cmake => makefile   make
@@ -13,4 +13,10 @@ set(LIB_SRC_LIST Logger.cc Timestamp.cc)
 add_library(mymuduo SHARED ${LIB_SRC_LIST})
 
 # 编译生成可执行文件
-add_executable(test test.cc InetAddress.cc)
+add_executable(mytest InetAddress.cc)
+
+include(CTest)
+add_test(
+    NAME case_test
+    COMMAND mytest
+)

@@ -31,3 +31,11 @@ std::string InetAddress::toIPPort() const
     sprintf(buf + end, ":%u", port);
     return buf;
 }
+
+// #include <iostream>
+// int main()
+// {
+//     InetAddress addr(8080);
+//     std::cout << addr.toIPPort() << std::endl;
+//     return 0;
+// }
